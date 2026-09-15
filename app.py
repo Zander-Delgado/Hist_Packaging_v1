@@ -22,10 +22,6 @@ def asignar_temporada(fecha):
         return f"T{str(anio - 1)[2:]}{str(anio)[2:]}"
 
 def inferir_categoria(row):
-    """
-    Infiere la categoría analizando primero el prefijo del código Material (SAP)
-    y luego el Texto breve como regla de respaldo.
-    """
     material = str(row.get("Material", "")).strip().upper()
     texto = str(row.get("Texto breve", "")).strip().upper()
 
@@ -86,33 +82,39 @@ def cargar_y_limpiar_datos(archivo_subido):
         
     df = pd.read_excel(xls, sheet_name=hoja_correcta)
     
-    # 1. Limpieza de órdenes archivadas o no ejecutadas
+    # Limpieza de registros no vigentes (S y L)
     df = df[~df["Indicador de borrado"].astype(str).str.upper().isin(["S", "L"])].copy()
     
-    # 2. Tipos de datos y fechas
+    # Manejo de fechas y temporalidades
     df["Fecha documento"] = pd.to_datetime(df["Fecha documento"], errors="coerce")
     df = df.dropna(subset=["Fecha documento"])
-    
-    # 3. Asignación de temporada
     df["Temporada"] = df["Fecha documento"].apply(asignar_temporada)
+    df["Mes"] = df["Fecha documento"].dt.month
+    df["Semana"] = df["Fecha documento"].dt.isocalendar().week.astype(int)
     
-    # 4. Homologación de Unidad de Medida
+    # Unidad de Medida
     if "Unidad medida pedido" in df.columns:
         df["Unidad medida pedido"] = df["Unidad medida pedido"].fillna("UN").astype(str).str.strip().str.upper()
     else:
         df["Unidad medida pedido"] = "UN"
         
-    # 5. Inferencia de Categoría
+    # Moneda
+    if "Moneda" in df.columns:
+        df["Moneda"] = df["Moneda"].fillna("USD").astype(str).str.strip().str.upper()
+    else:
+        df["Moneda"] = "USD"
+        
+    # Inferencia de Categoría
     if "Categoría" not in df.columns or df["Categoría"].isna().all():
         df["Categoría"] = df.apply(inferir_categoria, axis=1)
     else:
         df["Categoría"] = df["Categoría"].fillna(df.apply(inferir_categoria, axis=1))
     
-    # 6. Conversión a numéricos
+    # Conversiones numéricas
     df["Cantidad de pedido"] = pd.to_numeric(df["Cantidad de pedido"], errors="coerce").fillna(0)
     df["Valor neto de pedido"] = pd.to_numeric(df["Valor neto de pedido"], errors="coerce").fillna(0)
     
-    # 7. Precio Unitario Real considerando Cantidad Base de SAP
+    # Precio unitario base en moneda original
     if "Cantidad base" in df.columns:
         df["Cantidad base"] = pd.to_numeric(df["Cantidad base"], errors="coerce").fillna(1)
         df["Cantidad base"] = np.where(df["Cantidad base"] <= 0, 1, df["Cantidad base"])
@@ -134,13 +136,13 @@ def cargar_y_limpiar_datos(archivo_subido):
     return df
 
 # =========================================================
-# INTERFAZ Y BARRA LATERAL (CARGA Y FILTROS)
+# INTERFAZ Y BARRA LATERAL (CARGA Y CONFIGURACIÓN)
 # =========================================================
 
 st.title("📦 Strategic Sourcing Analytics - Packaging & Agrícola")
-st.markdown("Herramienta corporativa para análisis de demanda histórica, clasificación ABC, dispersión de precios y licitaciones.")
+st.markdown("Herramienta corporativa para análisis de demanda histórica, variaciones interanuales y benchmarking de licitaciones.")
 
-st.sidebar.header("📁 Carga de Archivo")
+st.sidebar.header("📁 Carga de Datos")
 archivo = st.sidebar.file_uploader("Cargar reporte SAP (.xlsx)", type=["xlsx"])
 
 if archivo is None:
@@ -149,56 +151,134 @@ if archivo is None:
 
 df_clean = cargar_y_limpiar_datos(archivo)
 
+# --- CONFIGURACIÓN DE MONEDA Y TIPO DE CAMBIO (FEEDBACK 5 Y 6) ---
+st.sidebar.header("💵 Configuración de Moneda")
+tipo_vista_moneda = st.sidebar.radio(
+    "Visualizar importes en:",
+    options=["Moneda Local", "USD (Dólares Americanos)"],
+    index=0
+)
+
+tc_defaults = {
+    "USD": 1.0,
+    "EUR": 1.08,    # 1 EUR = 1.08 USD
+    "PEN": 0.27,    # 1 PEN = 0.27 USD
+    "MXN": 0.055,   # 1 MXN = 0.055 USD
+    "CLP": 0.0011,  # 1 CLP = 0.0011 USD
+    "MAD": 0.10,    # 1 MAD = 0.10 USD
+    "BRL": 0.18,    # 1 BRL = 0.18 USD
+    "COP": 0.00025, # 1 COP = 0.00025 USD
+    "INR": 0.012    # 1 INR = 0.012 USD
+}
+
+tasas_tc = {}
+if tipo_vista_moneda == "USD (Dólares Americanos)":
+    st.sidebar.markdown("**Factores de Conversión a USD:**")
+    st.sidebar.caption("Factor multiplicador para convertir 1 unidad de moneda local a USD.")
+    monedas_presentes = df_clean["Moneda"].unique().tolist()
+    
+    for mon in monedas_presentes:
+        if mon == "USD":
+            tasas_tc[mon] = 1.0
+        else:
+            val_def = tc_defaults.get(mon, 1.0)
+            tasas_tc[mon] = st.sidebar.number_input(
+                f"Factor TC ({mon} a USD):",
+                min_value=0.000001,
+                value=float(val_def),
+                step=0.005,
+                format="%.5f"
+            )
+
+# Aplicar factor de tipo de cambio al DataFrame
+df_operativo = df_clean.copy()
+if tipo_vista_moneda == "USD (Dólares Americanos)":
+    df_operativo["Factor_TC"] = df_operativo["Moneda"].map(tasas_tc).fillna(1.0)
+    df_operativo["Gasto_Moneda_Analisis"] = df_operativo["Valor neto de pedido"] * df_operativo["Factor_TC"]
+    df_operativo["Precio_Unitario_Analisis"] = df_operativo["Precio_Unitario_Real"] * df_operativo["Factor_TC"]
+    simbolo_moneda = "USD $"
+else:
+    df_operativo["Gasto_Moneda_Analisis"] = df_operativo["Valor neto de pedido"]
+    df_operativo["Precio_Unitario_Analisis"] = df_operativo["Precio_Unitario_Real"]
+    simbolo_moneda = "Moneda Local"
+
+# =========================================================
+# FILTROS DE SEGMENTACIÓN (FEEDBACK 1 Y 2)
+# =========================================================
+
 st.sidebar.header("🔍 Filtros de Segmentación")
 
-# Filtro: Organización de Compras
-filiales = sorted(df_clean["Organización compras"].dropna().unique().tolist())
-filial_sel = st.sidebar.multiselect("Organización de Compras:", filiales, default=filiales)
+# Filtro 1: Búsqueda manual de Material o Texto Breve
+busqueda_texto = st.sidebar.text_input("Buscar por Código o Descripción:", placeholder="Ej: SWITCH, PEST-0413, CAJA...")
 
-# Filtro: Categoría
-categorias = sorted(df_clean["Categoría"].dropna().unique().tolist())
-cat_sel = st.sidebar.multiselect("Categoría / Familia:", categorias, default=categorias)
+# Filtro Material y Texto breve
+todos_materiales = sorted(df_operativo["Material"].astype(str).unique().tolist())
+material_sel = st.sidebar.multiselect("Material (Código SAP):", todos_materiales)
 
-# Filtro: Unidad de Medida
-unidades = sorted(df_clean["Unidad medida pedido"].unique().tolist())
-uom_sel = st.sidebar.multiselect("Unidad de Medida (UOM):", unidades, default=unidades)
-
-# Filtro: Centro
-centros = sorted(df_clean["Centro"].dropna().unique().tolist())
-centro_sel = st.sidebar.multiselect("Centro / Almacén:", centros, default=centros)
-
-# Filtro: Temporada
-temporadas_disp = sorted(df_clean["Temporada"].unique().tolist())
+# Filtro cronológico: Temporada
+temporadas_disp = sorted(df_operativo["Temporada"].unique().tolist())
 temp_sel = st.sidebar.multiselect("Temporada:", temporadas_disp, default=temporadas_disp)
 
-# Aplicación de filtros
-df_filtrado = df_clean[
-    (df_clean["Organización compras"].isin(filial_sel)) &
-    (df_clean["Categoría"].isin(cat_sel)) &
-    (df_clean["Unidad medida pedido"].isin(uom_sel)) &
-    (df_clean["Centro"].isin(centro_sel)) &
-    (df_clean["Temporada"].isin(temp_sel))
-]
+# Filtro cronológico: Meses y Semanas
+meses_disp = sorted(df_operativo["Mes"].unique().tolist())
+mes_sel = st.sidebar.multiselect("Mes del año (1 - 12):", meses_disp, default=meses_disp)
+
+semanas_disp = sorted(df_operativo["Semana"].unique().tolist())
+semana_sel = st.sidebar.multiselect("Semana del año (1 - 53):", semanas_disp, default=semanas_disp)
+
+# Filtros organizacionales
+filiales = sorted(df_operativo["Organización compras"].dropna().unique().tolist())
+filial_sel = st.sidebar.multiselect("Organización de Compras:", filiales, default=filiales)
+
+categorias = sorted(df_operativo["Categoría"].dropna().unique().tolist())
+cat_sel = st.sidebar.multiselect("Categoría / Familia:", categorias, default=categorias)
+
+unidades = sorted(df_operativo["Unidad medida pedido"].unique().tolist())
+uom_sel = st.sidebar.multiselect("Unidad de Medida (UOM):", unidades, default=unidades)
+
+centros = sorted(df_operativo["Centro"].dropna().unique().tolist())
+centro_sel = st.sidebar.multiselect("Centro / Almacén:", centros, default=centros)
+
+# Aplicación compuesta de filtros
+df_filtrado = df_operativo[
+    (df_operativo["Organización compras"].isin(filial_sel)) &
+    (df_operativo["Categoría"].isin(cat_sel)) &
+    (df_operativo["Unidad medida pedido"].isin(uom_sel)) &
+    (df_operativo["Centro"].isin(centro_sel)) &
+    (df_operativo["Temporada"].isin(temp_sel)) &
+    (df_operativo["Mes"].isin(mes_sel)) &
+    (df_operativo["Semana"].isin(semana_sel))
+].copy()
+
+if material_sel:
+    df_filtrado = df_filtrado[df_filtrado["Material"].isin(material_sel)]
+
+if busqueda_texto:
+    termino = busqueda_texto.strip().upper()
+    df_filtrado = df_filtrado[
+        df_filtrado["Material"].astype(str).str.upper().str.contains(termino) |
+        df_filtrado["Texto breve"].astype(str).str.upper().str.contains(termino)
+    ]
 
 if df_filtrado.empty:
     st.warning("No se encontraron registros que cumplan con la combinación de filtros seleccionada.")
     st.stop()
 
 # =========================================================
-# INDICADORES GENERALES
+# RESUMEN EJECUTIVO
 # =========================================================
 
-st.markdown("### Resumen Ejecutivo")
+st.markdown(f"### Resumen de la Selección ({simbolo_moneda})")
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Líneas de PO Válidas", f"{len(df_filtrado):,}")
-m2.metric("Gasto Total Acumulado", f"{df_filtrado['Valor neto de pedido'].sum():,.2f}")
-m3.metric("Materiales Distintos", f"{df_filtrado['Material'].nunique():,}")
+m2.metric(f"Gasto Total ({simbolo_moneda})", f"{df_filtrado['Gasto_Moneda_Analisis'].sum():,.2f}")
+m3.metric("Materiales Seleccionados", f"{df_filtrado['Material'].nunique():,}")
 m4.metric("Unidades de Medida", f"{', '.join(df_filtrado['Unidad medida pedido'].unique())}")
 
 st.divider()
 
 # =========================================================
-# MÓDULOS DE ANÁLISIS DE NEGOCIO (PREGUNTAS 1 A 8)
+# PESTAÑAS DE ANÁLISIS
 # =========================================================
 
 tabs = st.tabs([
@@ -212,14 +292,14 @@ tabs = st.tabs([
 ])
 
 # ---------------------------------------------------------
-# 1 & 2. MATERIALES, VOLUMEN Y GASTO
+# PESTAÑA 1 & 2: VOLUMEN Y GASTO
 # ---------------------------------------------------------
 with tabs[0]:
-    st.subheader("1 & 2. Materiales Comprados por Temporada, Volumen y Gasto")
+    st.subheader(f"1 & 2. Materiales Comprados por Temporada, Volumen y Gasto ({simbolo_moneda})")
     
     agrup_mat = df_filtrado.groupby(["Temporada", "Material", "Texto breve", "Unidad medida pedido"]).agg(
         Volumen_Total=("Cantidad de pedido", "sum"),
-        Gasto_Total=("Valor neto de pedido", "sum"),
+        Gasto_Total=("Gasto_Moneda_Analisis", "sum"),
         Nro_Pedidos=("Documento compras", "nunique")
     ).reset_index().sort_values(by=["Temporada", "Gasto_Total"], ascending=[True, False])
     
@@ -233,13 +313,13 @@ with tabs[0]:
     )
 
 # ---------------------------------------------------------
-# 3. CLASIFICACIÓN ABC (PARETO DE GASTO)
+# PESTAÑA 3: CLASIFICACIÓN ABC
 # ---------------------------------------------------------
 with tabs[1]:
-    st.subheader("3. Clasificación ABC por Gasto Monetario")
+    st.subheader(f"3. Clasificación ABC de Materiales por Gasto ({simbolo_moneda})")
     
     abc_df = df_filtrado.groupby(["Material", "Texto breve", "Unidad medida pedido"]).agg(
-        Gasto_Total=("Valor neto de pedido", "sum"),
+        Gasto_Total=("Gasto_Moneda_Analisis", "sum"),
         Volumen_Total=("Cantidad de pedido", "sum")
     ).reset_index().sort_values(by="Gasto_Total", ascending=False)
     
@@ -269,7 +349,7 @@ with tabs[1]:
     )
 
 # ---------------------------------------------------------
-# 4. RECURRENCIA DE COMPRA
+# PESTAÑA 4: RECURRENCIA DE COMPRA
 # ---------------------------------------------------------
 with tabs[2]:
     st.subheader("4. Frecuencia y Recurrencia de Emisión de Órdenes")
@@ -299,14 +379,14 @@ with tabs[2]:
     )
 
 # ---------------------------------------------------------
-# 5. VARIACIÓN INTERANUAL (YoY)
+# PESTAÑA 5: VARIACIÓN INTERANUAL (YoY) - INCLUYE PRECIO PROMEDIO PONDERADO (FEEDBACK 3)
 # ---------------------------------------------------------
 with tabs[3]:
-    st.subheader("5. Variación Interanual (YoY)")
+    st.subheader(f"5. Variación Interanual (YoY) de Volumen, Gasto y Precio Ponderado ({simbolo_moneda})")
     
     temps = sorted(df_filtrado["Temporada"].unique().tolist())
     if len(temps) < 2:
-        st.info(f"Se requieren al menos 2 temporadas para comparar variación interanual. Temporadas disponibles: {temps}")
+        st.info(f"Se requieren al menos 2 temporadas para calcular variación interanual. Temporadas disponibles: {temps}")
     else:
         c_t1, c_t2 = st.columns(2)
         temp_base = c_t1.selectbox("Temporada Base (T1):", temps, index=0)
@@ -323,12 +403,13 @@ with tabs[3]:
         pivot_val = df_filtrado.pivot_table(
             index=["Material", "Texto breve", "Unidad medida pedido"],
             columns="Temporada",
-            values="Valor neto de pedido",
+            values="Gasto_Moneda_Analisis",
             aggfunc="sum",
             fill_value=0
         )
         
         df_yoy = pd.DataFrame(index=pivot_vol.index)
+        # Volúmenes
         df_yoy[f"Vol_{temp_base}"] = pivot_vol[temp_base]
         df_yoy[f"Vol_{temp_comp}"] = pivot_vol[temp_comp]
         df_yoy["Var_Vol_%"] = np.where(
@@ -337,11 +418,22 @@ with tabs[3]:
             np.nan
         )
         
+        # Gastos
         df_yoy[f"Gasto_{temp_base}"] = pivot_val[temp_base]
         df_yoy[f"Gasto_{temp_comp}"] = pivot_val[temp_comp]
         df_yoy["Var_Gasto_%"] = np.where(
             df_yoy[f"Gasto_{temp_base}"] > 0,
             ((df_yoy[f"Gasto_{temp_comp}"] - df_yoy[f"Gasto_{temp_base}"]) / df_yoy[f"Gasto_{temp_base}"]) * 100,
+            np.nan
+        )
+        
+        # Precios Promedio Ponderados
+        df_yoy[f"PPP_{temp_base}"] = np.where(df_yoy[f"Vol_{temp_base}"] > 0, df_yoy[f"Gasto_{temp_base}"] / df_yoy[f"Vol_{temp_base}"], np.nan)
+        df_yoy[f"PPP_{temp_comp}"] = np.where(df_yoy[f"Vol_{temp_comp}"] > 0, df_yoy[f"Gasto_{temp_comp}"] / df_yoy[f"Vol_{temp_comp}"], np.nan)
+        
+        df_yoy["Var_PPP_%"] = np.where(
+            df_yoy[f"PPP_{temp_base}"] > 0,
+            ((df_yoy[f"PPP_{temp_comp}"] - df_yoy[f"PPP_{temp_base}"]) / df_yoy[f"PPP_{temp_base}"]) * 100,
             np.nan
         )
         
@@ -354,19 +446,22 @@ with tabs[3]:
                 "Var_Vol_%": "{:+.2f}%",
                 f"Gasto_{temp_base}": "{:,.2f}",
                 f"Gasto_{temp_comp}": "{:,.2f}",
-                "Var_Gasto_%": "{:+.2f}%"
+                "Var_Gasto_%": "{:+.2f}%",
+                f"PPP_{temp_base}": "{:,.4f}",
+                f"PPP_{temp_comp}": "{:,.4f}",
+                "Var_PPP_%": "{:+.2f}%"
             }),
             use_container_width=True
         )
 
 # ---------------------------------------------------------
-# 6. PRIORIZACIÓN PARA LICITACIÓN CORPORATIVA
+# PESTAÑA 6: PRIORIZACIÓN PARA LICITACIÓN CORPORATIVA
 # ---------------------------------------------------------
 with tabs[4]:
     st.subheader("6. Matriz de Recomendación de Licitación Corporativa")
     
     licit_df = df_filtrado.groupby(["Material", "Texto breve", "Unidad medida pedido"]).agg(
-        Gasto_Total=("Valor neto de pedido", "sum"),
+        Gasto_Total=("Gasto_Moneda_Analisis", "sum"),
         Volumen_Total=("Cantidad de pedido", "sum"),
         Filiales_Compradoras=("Organización compras", "nunique"),
         Proveedores_Activos=("Proveedor/Centro suministrador", "nunique")
@@ -397,32 +492,57 @@ with tabs[4]:
     )
 
 # ---------------------------------------------------------
-# 7. ANÁLISIS DE PRECIOS POR UNIDAD DE MEDIDA
+# PESTAÑA 7: ANÁLISIS DE PRECIOS CON ÚLTIMA COMPRA Y PROVEEDOR (FEEDBACK 4)
 # ---------------------------------------------------------
 with tabs[5]:
-    st.subheader("7. Precios Históricos: Promedio Ponderado, Mínimo y Máximo")
+    st.subheader(f"7. Precios Históricos, Mínimos, Máximos y Última Compra Real ({simbolo_moneda})")
     
-    precios_df = df_filtrado[df_filtrado["Precio_Unitario_Real"] > 0].groupby(
+    # 1. Agregaciones estadísticas
+    precios_df = df_filtrado[df_filtrado["Precio_Unitario_Analisis"] > 0].groupby(
         ["Temporada", "Material", "Texto breve", "Unidad medida pedido"]
     ).agg(
-        Precio_Min=("Precio_Unitario_Real", "min"),
-        Precio_Max=("Precio_Unitario_Real", "max"),
-        Precio_Prom_Simple=("Precio_Unitario_Real", "mean"),
+        Precio_Min=("Precio_Unitario_Analisis", "min"),
+        Precio_Max=("Precio_Unitario_Analisis", "max"),
+        Precio_Prom_Simple=("Precio_Unitario_Analisis", "mean"),
         Volumen_Total=("Cantidad de pedido", "sum"),
-        Gasto_Total=("Valor neto de pedido", "sum")
+        Gasto_Total=("Gasto_Moneda_Analisis", "sum")
     ).reset_index()
     
     precios_df["Precio_Prom_Ponderado"] = precios_df["Gasto_Total"] / precios_df["Volumen_Total"]
     precios_df["Dispersion_Precio_%"] = ((precios_df["Precio_Max"] - precios_df["Precio_Min"]) / precios_df["Precio_Min"]) * 100
-    precios_df = precios_df.sort_values(by="Gasto_Total", ascending=False)
+    
+    # 2. Extracción de la última compra cronológica del material en cada temporada
+    df_ordenado_fecha = df_filtrado.sort_values(by=["Fecha documento", "Documento compras"], ascending=True)
+    ultimas_compras = df_ordenado_fecha.groupby(
+        ["Temporada", "Material", "Texto breve", "Unidad medida pedido"]
+    ).last().reset_index()
+    
+    ultimas_compras = ultimas_compras[[
+        "Temporada", "Material", "Texto breve", "Unidad medida pedido",
+        "Fecha documento", "Precio_Unitario_Analisis", "Proveedor/Centro suministrador"
+    ]].rename(columns={
+        "Fecha documento": "Fecha_Ultima_Compra",
+        "Precio_Unitario_Analisis": "Ultimo_Precio_Compra",
+        "Proveedor/Centro suministrador": "Ultimo_Proveedor"
+    })
+    
+    # 3. Cruzar estadísticas con última compra
+    precios_final = pd.merge(
+        precios_df,
+        ultimas_compras,
+        on=["Temporada", "Material", "Texto breve", "Unidad medida pedido"],
+        how="left"
+    ).sort_values(by="Gasto_Total", ascending=False)
     
     st.dataframe(
-        precios_df.style.format({
+        precios_final.style.format({
             "Precio_Min": "{:,.4f}",
             "Precio_Max": "{:,.4f}",
             "Precio_Prom_Simple": "{:,.4f}",
             "Precio_Prom_Ponderado": "{:,.4f}",
             "Dispersion_Precio_%": "{:.1f}%",
+            "Ultimo_Precio_Compra": "{:,.4f}",
+            "Fecha_Ultima_Compra": lambda t: t.strftime("%Y-%m-%d") if pd.notnull(t) else "-",
             "Volumen_Total": "{:,.2f}",
             "Gasto_Total": "{:,.2f}"
         }),
@@ -430,13 +550,13 @@ with tabs[5]:
     )
 
 # ---------------------------------------------------------
-# 8. RANKING DE PROVEEDORES
+# PESTAÑA 8: RANKING DE PROVEEDORES
 # ---------------------------------------------------------
 with tabs[6]:
-    st.subheader("8. Ranking de Proveedores por Gasto Total")
+    st.subheader(f"8. Ranking de Proveedores por Gasto Total ({simbolo_moneda})")
     
     ranking_prov = df_filtrado.groupby("Proveedor/Centro suministrador").agg(
-        Gasto_Total=("Valor neto de pedido", "sum"),
+        Gasto_Total=("Gasto_Moneda_Analisis", "sum"),
         PO_Emitidas=("Documento compras", "nunique")
     ).reset_index().sort_values(by="Gasto_Total", ascending=False)
     
@@ -447,8 +567,8 @@ with tabs[6]:
     
     fig_p, ax_p = plt.subplots(figsize=(10, 5))
     sns.barplot(data=top_10_p, y="Proveedor/Centro suministrador", x="Gasto_Total", palette="crest", ax=ax_p)
-    ax_p.set_title("Top 10 Proveedores por Importe Adquirido")
-    ax_p.set_xlabel("Gasto Total")
+    ax_p.set_title(f"Top 10 Proveedores por Importe Adquirido ({simbolo_moneda})")
+    ax_p.set_xlabel(f"Gasto Total ({simbolo_moneda})")
     ax_p.set_ylabel("Proveedor")
     st.pyplot(fig_p)
     
