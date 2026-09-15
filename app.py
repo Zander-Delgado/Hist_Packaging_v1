@@ -176,36 +176,38 @@ tc_defaults_por_usd = {
     "GBP": 1.36      # 1 GBP = 1.36 USD
 }
 
+# Detectar monedas únicas presentes en el archivo
+monedas_presentes = sorted(df_clean["Moneda"].dropna().astype(str).unique().tolist())
+monedas_no_usd = [m for m in monedas_presentes if m.upper() != "USD"]
+moneda_local_principal = monedas_no_usd[0] if len(monedas_no_usd) > 0 else "USD"
+
+st.sidebar.markdown("**Tipo de Cambio Oficial (Control de Gestión):**")
 tasas_tc = {}
-if tipo_vista_moneda == "USD (Dólares Americanos)":
-    st.sidebar.markdown("**Tipo de Cambio Oficial (Control de Gestión):**")
-    monedas_presentes = sorted(df_clean["Moneda"].dropna().astype(str).unique().tolist())
-    
-    for mon in monedas_presentes:
-        if mon == "USD":
-            tasas_tc[mon] = 1.0
-        elif mon in ["EUR", "GBP"]:
-            # Cotización USD por unidad (ej. 1 EUR = 1.16 USD)
-            val_def = tc_defaults_por_usd.get(mon, 1.16)
-            tasas_tc[mon] = st.sidebar.number_input(
-                f"TC ({mon} a USD - Multiplicador):",
-                min_value=0.001,
-                value=float(val_def),
-                step=0.01,
-                format="%.4f",
-                help=f"1 {mon} equivale a X USD (se multiplica)."
-            )
-        else:
-            # Cotización Moneda Local por 1 USD (ej. 1 USD = 17.64 MXN)
-            val_def = tc_defaults_por_usd.get(mon, 1.0)
-            tasas_tc[mon] = st.sidebar.number_input(
-                f"TC (1 USD = X {mon}):",
-                min_value=0.001,
-                value=float(val_def),
-                step=0.01 if val_def < 50 else 1.0,
-                format="%.4f" if val_def < 50 else "%.2f",
-                help=f"Cuántos {mon} equivalen a 1 USD (se divide)."
-            )
+
+# Mostrar casillas editables para cada moneda del archivo
+for mon in monedas_presentes:
+    if mon == "USD":
+        tasas_tc[mon] = 1.0
+    elif mon in ["EUR", "GBP"]:
+        val_def = tc_defaults_por_usd.get(mon, 1.16)
+        tasas_tc[mon] = st.sidebar.number_input(
+            f"TC ({mon} a USD - Multiplicador):",
+            min_value=0.001,
+            value=float(val_def),
+            step=0.01,
+            format="%.4f",
+            help=f"1 {mon} equivale a X USD (se multiplica)."
+        )
+    else:
+        val_def = tc_defaults_por_usd.get(mon, 1.0)
+        tasas_tc[mon] = st.sidebar.number_input(
+            f"TC (1 USD = X {mon}):",
+            min_value=0.001,
+            value=float(val_def),
+            step=0.01 if val_def < 50 else 1.0,
+            format="%.4f" if val_def < 50 else "%.2f",
+            help=f"Cuántos {mon} equivalen a 1 USD."
+        )
 
 # Conversión vectorizada al DataFrame operativo
 df_operativo = df_clean.copy()
@@ -218,9 +220,9 @@ if tipo_vista_moneda == "USD (Dólares Americanos)":
         if tc <= 0:
             return val
         if mon in ["EUR", "GBP"]:
-            return val * tc  # Multiplica
+            return val * tc
         else:
-            return val / tc  # Divide: MXN / 17.64 = USD
+            return val / tc
 
     df_operativo["Gasto_Moneda_Analisis"] = df_operativo.apply(
         lambda r: convertir_a_usd(r, "Valor neto de pedido"), axis=1
@@ -229,10 +231,28 @@ if tipo_vista_moneda == "USD (Dólares Americanos)":
         lambda r: convertir_a_usd(r, "Precio_Unitario_Real"), axis=1
     )
     simbolo_moneda = "USD $"
+
 else:
-    df_operativo["Gasto_Moneda_Analisis"] = df_operativo["Valor neto de pedido"]
-    df_operativo["Precio_Unitario_Analisis"] = df_operativo["Precio_Unitario_Real"]
-    simbolo_moneda = "Moneda Local"
+    tc_local = tasas_tc.get(moneda_local_principal, tc_defaults_por_usd.get(moneda_local_principal, 1.0))
+
+    def convertir_a_local(row, col_valor):
+        mon = str(row["Moneda"]).upper()
+        val = row[col_valor]
+        # Si la orden se emitió en USD y la filial es local, homogeneiza a la moneda local
+        if mon == "USD" and moneda_local_principal != "USD":
+            if moneda_local_principal in ["EUR", "GBP"]:
+                return val / tc_local if tc_local > 0 else val
+            else:
+                return val * tc_local
+        return val
+
+    df_operativo["Gasto_Moneda_Analisis"] = df_operativo.apply(
+        lambda r: convertir_a_local(r, "Valor neto de pedido"), axis=1
+    )
+    df_operativo["Precio_Unitario_Analisis"] = df_operativo.apply(
+        lambda r: convertir_a_local(r, "Precio_Unitario_Real"), axis=1
+    )
+    simbolo_moneda = f"{moneda_local_principal} (Local)"
 
 # =========================================================
 # FILTROS DE SEGMENTACIÓN (CONVERSIÓN SEGURA A TEXTO)
