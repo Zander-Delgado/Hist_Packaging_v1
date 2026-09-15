@@ -203,40 +203,37 @@ else:
     simbolo_moneda = "Moneda Local"
 
 # =========================================================
-# FILTROS DE SEGMENTACIÓN (FEEDBACK 1 Y 2)
+# FILTROS DE SEGMENTACIÓN (CONVERSIÓN SEGURA A TEXTO)
 # =========================================================
 
 st.sidebar.header("🔍 Filtros de Segmentación")
 
-# Filtro 1: Búsqueda manual de Material o Texto Breve
+# Filtro 1: Búsqueda manual
 busqueda_texto = st.sidebar.text_input("Buscar por Código o Descripción:", placeholder="Ej: SWITCH, PEST-0413, CAJA...")
 
-# Filtro Material y Texto breve
-todos_materiales = sorted(df_operativo["Material"].astype(str).unique().tolist())
+# Extracción blindada contra nulos y tipos mixtos
+todos_materiales = sorted(df_operativo["Material"].dropna().astype(str).unique().tolist())
 material_sel = st.sidebar.multiselect("Material (Código SAP):", todos_materiales)
 
-# Filtro cronológico: Temporada
-temporadas_disp = sorted(df_operativo["Temporada"].unique().tolist())
+temporadas_disp = sorted(df_operativo["Temporada"].dropna().astype(str).unique().tolist())
 temp_sel = st.sidebar.multiselect("Temporada:", temporadas_disp, default=temporadas_disp)
 
-# Filtro cronológico: Meses y Semanas
-meses_disp = sorted(df_operativo["Mes"].unique().tolist())
+meses_disp = sorted([int(m) for m in df_operativo["Mes"].dropna().unique()])
 mes_sel = st.sidebar.multiselect("Mes del año (1 - 12):", meses_disp, default=meses_disp)
 
-semanas_disp = sorted(df_operativo["Semana"].unique().tolist())
+semanas_disp = sorted([int(s) for s in df_operativo["Semana"].dropna().unique()])
 semana_sel = st.sidebar.multiselect("Semana del año (1 - 53):", semanas_disp, default=semanas_disp)
 
-# Filtros organizacionales
-filiales = sorted(df_operativo["Organización compras"].dropna().unique().tolist())
+filiales = sorted(df_operativo["Organización compras"].dropna().astype(str).unique().tolist())
 filial_sel = st.sidebar.multiselect("Organización de Compras:", filiales, default=filiales)
 
-categorias = sorted(df_operativo["Categoría"].dropna().unique().tolist())
+categorias = sorted(df_operativo["Categoría"].dropna().astype(str).unique().tolist())
 cat_sel = st.sidebar.multiselect("Categoría / Familia:", categorias, default=categorias)
 
-unidades = sorted(df_operativo["Unidad medida pedido"].unique().tolist())
+unidades = sorted(df_operativo["Unidad medida pedido"].dropna().astype(str).unique().tolist())
 uom_sel = st.sidebar.multiselect("Unidad de Medida (UOM):", unidades, default=unidades)
 
-centros = sorted(df_operativo["Centro"].dropna().unique().tolist())
+centros = sorted(df_operativo["Centro"].dropna().astype(str).unique().tolist())
 centro_sel = st.sidebar.multiselect("Centro / Almacén:", centros, default=centros)
 
 # Aplicación compuesta de filtros
