@@ -151,7 +151,10 @@ if archivo is None:
 
 df_clean = cargar_y_limpiar_datos(archivo)
 
-# --- CONFIGURACIÓN DE MONEDA Y TIPO DE CAMBIO (FEEDBACK 5 Y 6) ---
+# =========================================================
+# CONFIGURACIÓN DE MONEDA Y TIPO DE CAMBIO (PRESUPUESTO CORPORATIVO)
+# =========================================================
+
 st.sidebar.header("💵 Configuración de Moneda")
 tipo_vista_moneda = st.sidebar.radio(
     "Visualizar importes en:",
@@ -159,43 +162,72 @@ tipo_vista_moneda = st.sidebar.radio(
     index=0
 )
 
-tc_defaults = {
+# Valores base promedio extraídos de la tabla de Control y Gestión (Budget 26/27)
+tc_defaults_por_usd = {
     "USD": 1.0,
-    "EUR": 1.08,    # 1 EUR = 1.08 USD
-    "PEN": 0.27,    # 1 PEN = 0.27 USD
-    "MXN": 0.055,   # 1 MXN = 0.055 USD
-    "CLP": 0.0011,  # 1 CLP = 0.0011 USD
-    "MAD": 0.10,    # 1 MAD = 0.10 USD
-    "BRL": 0.18,    # 1 BRL = 0.18 USD
-    "COP": 0.00025, # 1 COP = 0.00025 USD
-    "INR": 0.012    # 1 INR = 0.012 USD
+    "MXN": 17.64,    # 1 USD = 17.64 MXN
+    "PEN": 3.43,     # 1 USD = 3.43 PEN
+    "CLP": 889.81,   # 1 USD = 889.81 CLP
+    "MAD": 9.20,     # 1 USD = 9.20 MAD (Marruecos)
+    "COP": 3854.59,  # 1 USD = 3,854.59 COP
+    "BRL": 5.58,     # 1 USD = 5.58 BRL
+    "INR": 92.23,    # 1 USD = 92.23 INR
+    "EUR": 1.16,     # 1 EUR = 1.16 USD (Cotización inversa estándar)
+    "GBP": 1.36      # 1 GBP = 1.36 USD
 }
 
 tasas_tc = {}
 if tipo_vista_moneda == "USD (Dólares Americanos)":
-    st.sidebar.markdown("**Factores de Conversión a USD:**")
-    st.sidebar.caption("Factor multiplicador para convertir 1 unidad de moneda local a USD.")
-    monedas_presentes = df_clean["Moneda"].unique().tolist()
+    st.sidebar.markdown("**Tipo de Cambio Oficial (Control de Gestión):**")
+    monedas_presentes = sorted(df_clean["Moneda"].dropna().astype(str).unique().tolist())
     
     for mon in monedas_presentes:
         if mon == "USD":
             tasas_tc[mon] = 1.0
-        else:
-            val_def = tc_defaults.get(mon, 1.0)
+        elif mon in ["EUR", "GBP"]:
+            # Cotización USD por unidad (ej. 1 EUR = 1.16 USD)
+            val_def = tc_defaults_por_usd.get(mon, 1.16)
             tasas_tc[mon] = st.sidebar.number_input(
-                f"Factor TC ({mon} a USD):",
-                min_value=0.000001,
+                f"TC ({mon} a USD - Multiplicador):",
+                min_value=0.001,
                 value=float(val_def),
-                step=0.005,
-                format="%.5f"
+                step=0.01,
+                format="%.4f",
+                help=f"1 {mon} equivale a X USD (se multiplica)."
+            )
+        else:
+            # Cotización Moneda Local por 1 USD (ej. 1 USD = 17.64 MXN)
+            val_def = tc_defaults_por_usd.get(mon, 1.0)
+            tasas_tc[mon] = st.sidebar.number_input(
+                f"TC (1 USD = X {mon}):",
+                min_value=0.001,
+                value=float(val_def),
+                step=0.01 if val_def < 50 else 1.0,
+                format="%.4f" if val_def < 50 else "%.2f",
+                help=f"Cuántos {mon} equivalen a 1 USD (se divide)."
             )
 
-# Aplicar factor de tipo de cambio al DataFrame
+# Conversión vectorizada al DataFrame operativo
 df_operativo = df_clean.copy()
+
 if tipo_vista_moneda == "USD (Dólares Americanos)":
-    df_operativo["Factor_TC"] = df_operativo["Moneda"].map(tasas_tc).fillna(1.0)
-    df_operativo["Gasto_Moneda_Analisis"] = df_operativo["Valor neto de pedido"] * df_operativo["Factor_TC"]
-    df_operativo["Precio_Unitario_Analisis"] = df_operativo["Precio_Unitario_Real"] * df_operativo["Factor_TC"]
+    def convertir_a_usd(row, col_valor):
+        mon = str(row["Moneda"]).upper()
+        val = row[col_valor]
+        tc = tasas_tc.get(mon, 1.0)
+        if tc <= 0:
+            return val
+        if mon in ["EUR", "GBP"]:
+            return val * tc  # Multiplica
+        else:
+            return val / tc  # Divide: MXN / 17.64 = USD
+
+    df_operativo["Gasto_Moneda_Analisis"] = df_operativo.apply(
+        lambda r: convertir_a_usd(r, "Valor neto de pedido"), axis=1
+    )
+    df_operativo["Precio_Unitario_Analisis"] = df_operativo.apply(
+        lambda r: convertir_a_usd(r, "Precio_Unitario_Real"), axis=1
+    )
     simbolo_moneda = "USD $"
 else:
     df_operativo["Gasto_Moneda_Analisis"] = df_operativo["Valor neto de pedido"]
