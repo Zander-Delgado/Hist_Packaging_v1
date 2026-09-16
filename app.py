@@ -82,39 +82,39 @@ def cargar_y_limpiar_datos(archivo_subido):
         
     df = pd.read_excel(xls, sheet_name=hoja_correcta)
     
-    # Limpieza de registros no vigentes (S y L)
+    # 1. Limpieza de órdenes no vigentes (S y L)
     df = df[~df["Indicador de borrado"].astype(str).str.upper().isin(["S", "L"])].copy()
     
-    # Manejo de fechas y temporalidades
+    # 2. Manejo de fechas y temporalidades
     df["Fecha documento"] = pd.to_datetime(df["Fecha documento"], errors="coerce")
     df = df.dropna(subset=["Fecha documento"])
     df["Temporada"] = df["Fecha documento"].apply(asignar_temporada)
     df["Mes"] = df["Fecha documento"].dt.month
     df["Semana"] = df["Fecha documento"].dt.isocalendar().week.astype(int)
     
-    # Unidad de Medida
+    # 3. Unidad de Medida
     if "Unidad medida pedido" in df.columns:
         df["Unidad medida pedido"] = df["Unidad medida pedido"].fillna("UN").astype(str).str.strip().str.upper()
     else:
         df["Unidad medida pedido"] = "UN"
         
-    # Moneda
+    # 4. Moneda
     if "Moneda" in df.columns:
         df["Moneda"] = df["Moneda"].fillna("USD").astype(str).str.strip().str.upper()
     else:
         df["Moneda"] = "USD"
         
-    # Inferencia de Categoría
+    # 5. Inferencia de Categoría
     if "Categoría" not in df.columns or df["Categoría"].isna().all():
         df["Categoría"] = df.apply(inferir_categoria, axis=1)
     else:
         df["Categoría"] = df["Categoría"].fillna(df.apply(inferir_categoria, axis=1))
     
-    # Conversiones numéricas
+    # 6. Conversiones numéricas
     df["Cantidad de pedido"] = pd.to_numeric(df["Cantidad de pedido"], errors="coerce").fillna(0)
     df["Valor neto de pedido"] = pd.to_numeric(df["Valor neto de pedido"], errors="coerce").fillna(0)
     
-    # Precio unitario base en moneda original
+    # 7. Precio Unitario Real base SAP
     if "Cantidad base" in df.columns:
         df["Cantidad base"] = pd.to_numeric(df["Cantidad base"], errors="coerce").fillna(1)
         df["Cantidad base"] = np.where(df["Cantidad base"] <= 0, 1, df["Cantidad base"])
@@ -140,7 +140,7 @@ def cargar_y_limpiar_datos(archivo_subido):
 # =========================================================
 
 st.title("📦 Strategic Sourcing Analytics - Packaging & Agrícola")
-st.markdown("Herramienta corporativa para análisis de demanda histórica, variaciones interanuales y benchmarking de licitaciones.")
+st.markdown("Herramienta corporativa para análisis de demanda histórica, gobernanza de datos y licitaciones.")
 
 st.sidebar.header("📁 Carga de Datos")
 archivo = st.sidebar.file_uploader("Cargar reporte SAP (.xlsx)", type=["xlsx"])
@@ -151,10 +151,7 @@ if archivo is None:
 
 df_clean = cargar_y_limpiar_datos(archivo)
 
-# =========================================================
-# CONFIGURACIÓN DE MONEDA Y TIPO DE CAMBIO (PRESUPUESTO CORPORATIVO)
-# =========================================================
-
+# --- CONFIGURACIÓN DE MONEDA ---
 st.sidebar.header("💵 Configuración de Moneda")
 tipo_vista_moneda = st.sidebar.radio(
     "Visualizar importes en:",
@@ -162,29 +159,24 @@ tipo_vista_moneda = st.sidebar.radio(
     index=0
 )
 
-# Valores base promedio extraídos de la tabla de Control y Gestión (Budget 26/27)
+# Valores default promedio de Budget 26/27 de Control y Gestión
 tc_defaults_por_usd = {
     "USD": 1.0,
     "MXN": 17.64,    # 1 USD = 17.64 MXN
     "PEN": 3.43,     # 1 USD = 3.43 PEN
     "CLP": 889.81,   # 1 USD = 889.81 CLP
-    "MAD": 9.20,     # 1 USD = 9.20 MAD (Marruecos)
+    "MAD": 9.20,     # 1 USD = 9.20 MAD
     "COP": 3854.59,  # 1 USD = 3,854.59 COP
     "BRL": 5.58,     # 1 USD = 5.58 BRL
     "INR": 92.23,    # 1 USD = 92.23 INR
-    "EUR": 1.16,     # 1 EUR = 1.16 USD (Cotización inversa estándar)
+    "EUR": 1.16,     # 1 EUR = 1.16 USD
     "GBP": 1.36      # 1 GBP = 1.36 USD
 }
 
-# Detectar monedas únicas presentes en el archivo
-monedas_presentes = sorted(df_clean["Moneda"].dropna().astype(str).unique().tolist())
-monedas_no_usd = [m for m in monedas_presentes if m.upper() != "USD"]
-moneda_local_principal = monedas_no_usd[0] if len(monedas_no_usd) > 0 else "USD"
-
 st.sidebar.markdown("**Tipo de Cambio Oficial (Control de Gestión):**")
+monedas_presentes = sorted(df_clean["Moneda"].dropna().astype(str).unique().tolist())
 tasas_tc = {}
 
-# Mostrar casillas editables para cada moneda del archivo
 for mon in monedas_presentes:
     if mon == "USD":
         tasas_tc[mon] = 1.0
@@ -196,7 +188,7 @@ for mon in monedas_presentes:
             value=float(val_def),
             step=0.01,
             format="%.4f",
-            help=f"1 {mon} equivale a X USD (se multiplica)."
+            help=f"1 {mon} equivale a X USD."
         )
     else:
         val_def = tc_defaults_por_usd.get(mon, 1.0)
@@ -209,94 +201,47 @@ for mon in monedas_presentes:
             help=f"Cuántos {mon} equivalen a 1 USD."
         )
 
-# Conversión vectorizada al DataFrame operativo
-df_operativo = df_clean.copy()
-
-if tipo_vista_moneda == "USD (Dólares Americanos)":
-    def convertir_a_usd(row, col_valor):
-        mon = str(row["Moneda"]).upper()
-        val = row[col_valor]
-        tc = tasas_tc.get(mon, 1.0)
-        if tc <= 0:
-            return val
-        if mon in ["EUR", "GBP"]:
-            return val * tc
-        else:
-            return val / tc
-
-    df_operativo["Gasto_Moneda_Analisis"] = df_operativo.apply(
-        lambda r: convertir_a_usd(r, "Valor neto de pedido"), axis=1
-    )
-    df_operativo["Precio_Unitario_Analisis"] = df_operativo.apply(
-        lambda r: convertir_a_usd(r, "Precio_Unitario_Real"), axis=1
-    )
-    simbolo_moneda = "USD $"
-
-else:
-    tc_local = tasas_tc.get(moneda_local_principal, tc_defaults_por_usd.get(moneda_local_principal, 1.0))
-
-    def convertir_a_local(row, col_valor):
-        mon = str(row["Moneda"]).upper()
-        val = row[col_valor]
-        # Si la orden se emitió en USD y la filial es local, homogeneiza a la moneda local
-        if mon == "USD" and moneda_local_principal != "USD":
-            if moneda_local_principal in ["EUR", "GBP"]:
-                return val / tc_local if tc_local > 0 else val
-            else:
-                return val * tc_local
-        return val
-
-    df_operativo["Gasto_Moneda_Analisis"] = df_operativo.apply(
-        lambda r: convertir_a_local(r, "Valor neto de pedido"), axis=1
-    )
-    df_operativo["Precio_Unitario_Analisis"] = df_operativo.apply(
-        lambda r: convertir_a_local(r, "Precio_Unitario_Real"), axis=1
-    )
-    simbolo_moneda = f"{moneda_local_principal} (Local)"
-
 # =========================================================
-# FILTROS DE SEGMENTACIÓN (CONVERSIÓN SEGURA A TEXTO)
+# FILTROS DE SEGMENTACIÓN
 # =========================================================
 
 st.sidebar.header("🔍 Filtros de Segmentación")
 
-# Filtro 1: Búsqueda manual
 busqueda_texto = st.sidebar.text_input("Buscar por Código o Descripción:", placeholder="Ej: SWITCH, PEST-0413, CAJA...")
 
-# Extracción blindada contra nulos y tipos mixtos
-todos_materiales = sorted(df_operativo["Material"].dropna().astype(str).unique().tolist())
+todos_materiales = sorted(df_clean["Material"].dropna().astype(str).unique().tolist())
 material_sel = st.sidebar.multiselect("Material (Código SAP):", todos_materiales)
 
-temporadas_disp = sorted(df_operativo["Temporada"].dropna().astype(str).unique().tolist())
+temporadas_disp = sorted(df_clean["Temporada"].dropna().astype(str).unique().tolist())
 temp_sel = st.sidebar.multiselect("Temporada:", temporadas_disp, default=temporadas_disp)
 
-meses_disp = sorted([int(m) for m in df_operativo["Mes"].dropna().unique()])
+meses_disp = sorted([int(m) for m in df_clean["Mes"].dropna().unique()])
 mes_sel = st.sidebar.multiselect("Mes del año (1 - 12):", meses_disp, default=meses_disp)
 
-semanas_disp = sorted([int(s) for s in df_operativo["Semana"].dropna().unique()])
+semanas_disp = sorted([int(s) for s in df_clean["Semana"].dropna().unique()])
 semana_sel = st.sidebar.multiselect("Semana del año (1 - 53):", semanas_disp, default=semanas_disp)
 
-filiales = sorted(df_operativo["Organización compras"].dropna().astype(str).unique().tolist())
+filiales = sorted(df_clean["Organización compras"].dropna().astype(str).unique().tolist())
 filial_sel = st.sidebar.multiselect("Organización de Compras:", filiales, default=filiales)
 
-categorias = sorted(df_operativo["Categoría"].dropna().astype(str).unique().tolist())
+categorias = sorted(df_clean["Categoría"].dropna().astype(str).unique().tolist())
 cat_sel = st.sidebar.multiselect("Categoría / Familia:", categorias, default=categorias)
 
-unidades = sorted(df_operativo["Unidad medida pedido"].dropna().astype(str).unique().tolist())
+unidades = sorted(df_clean["Unidad medida pedido"].dropna().astype(str).unique().tolist())
 uom_sel = st.sidebar.multiselect("Unidad de Medida (UOM):", unidades, default=unidades)
 
-centros = sorted(df_operativo["Centro"].dropna().astype(str).unique().tolist())
+centros = sorted(df_clean["Centro"].dropna().astype(str).unique().tolist())
 centro_sel = st.sidebar.multiselect("Centro / Almacén:", centros, default=centros)
 
-# Aplicación compuesta de filtros
-df_filtrado = df_operativo[
-    (df_operativo["Organización compras"].isin(filial_sel)) &
-    (df_operativo["Categoría"].isin(cat_sel)) &
-    (df_operativo["Unidad medida pedido"].isin(uom_sel)) &
-    (df_operativo["Centro"].isin(centro_sel)) &
-    (df_operativo["Temporada"].isin(temp_sel)) &
-    (df_operativo["Mes"].isin(mes_sel)) &
-    (df_operativo["Semana"].isin(semana_sel))
+# Aplicar segmentación inicial
+df_filtrado = df_clean[
+    (df_clean["Organización compras"].isin(filial_sel)) &
+    (df_clean["Categoría"].isin(cat_sel)) &
+    (df_clean["Unidad medida pedido"].isin(uom_sel)) &
+    (df_clean["Centro"].isin(centro_sel)) &
+    (df_clean["Temporada"].isin(temp_sel)) &
+    (df_clean["Mes"].isin(mes_sel)) &
+    (df_clean["Semana"].isin(semana_sel))
 ].copy()
 
 if material_sel:
@@ -314,6 +259,57 @@ if df_filtrado.empty:
     st.stop()
 
 # =========================================================
+# LÓGICA DE MONEDA DINÁMICA POST-FILTRADO (REFORZADA)
+# =========================================================
+
+monedas_activas = sorted(df_filtrado["Moneda"].dropna().astype(str).unique().tolist())
+monedas_locales_activas = [m for m in monedas_activas if m.upper() != "USD"]
+
+# Determinar la moneda local según lo que el usuario filtró en pantalla
+if len(monedas_locales_activas) == 1:
+    moneda_local_activa = monedas_locales_activas[0]
+elif len(monedas_locales_activas) > 1:
+    moneda_local_activa = "MIXTA"
+else:
+    moneda_local_activa = "USD"
+
+if tipo_vista_moneda == "USD (Dólares Americanos)":
+    def a_usd(row, col):
+        mon = str(row["Moneda"]).upper()
+        val = row[col]
+        tc = tasas_tc.get(mon, 1.0)
+        if tc <= 0:
+            return val
+        return val * tc if mon in ["EUR", "GBP"] else val / tc
+
+    df_filtrado["Gasto_Moneda_Analisis"] = df_filtrado.apply(lambda r: a_usd(r, "Valor neto de pedido"), axis=1)
+    df_filtrado["Precio_Unitario_Analisis"] = df_filtrado.apply(lambda r: a_usd(r, "Precio_Unitario_Real"), axis=1)
+    simbolo_moneda = "USD $"
+
+else:
+    if moneda_local_activa == "MIXTA":
+        st.warning("⚠️ Ha filtrado registros de múltiples filiales con diferentes monedas locales. Para un análisis cuantitativo consolidado sin distorsión, cambie a 'USD (Dólares Americanos)'.")
+        df_filtrado["Gasto_Moneda_Analisis"] = df_filtrado["Valor neto de pedido"]
+        df_filtrado["Precio_Unitario_Analisis"] = df_filtrado["Precio_Unitario_Real"]
+        simbolo_moneda = "Moneda Mixta (Nominal)"
+    else:
+        tc_local = tasas_tc.get(moneda_local_activa, 1.0)
+        
+        def a_local(row, col):
+            mon = str(row["Moneda"]).upper()
+            val = row[col]
+            if mon == "USD" and moneda_local_activa != "USD":
+                if moneda_local_activa in ["EUR", "GBP"]:
+                    return val / tc_local if tc_local > 0 else val
+                else:
+                    return val * tc_local
+            return val
+
+        df_filtrado["Gasto_Moneda_Analisis"] = df_filtrado.apply(lambda r: a_local(r, "Valor neto de pedido"), axis=1)
+        df_filtrado["Precio_Unitario_Analisis"] = df_filtrado.apply(lambda r: a_local(r, "Precio_Unitario_Real"), axis=1)
+        simbolo_moneda = f"{moneda_local_activa} (Local)"
+
+# =========================================================
 # RESUMEN EJECUTIVO
 # =========================================================
 
@@ -327,7 +323,7 @@ m4.metric("Unidades de Medida", f"{', '.join(df_filtrado['Unidad medida pedido']
 st.divider()
 
 # =========================================================
-# PESTAÑAS DE ANÁLISIS
+# PESTAÑAS ANALÍTICAS
 # =========================================================
 
 tabs = st.tabs([
@@ -340,9 +336,7 @@ tabs = st.tabs([
     "8. Ranking Proveedores"
 ])
 
-# ---------------------------------------------------------
-# PESTAÑA 1 & 2: VOLUMEN Y GASTO
-# ---------------------------------------------------------
+# 1 & 2. VOLUMEN Y GASTO
 with tabs[0]:
     st.subheader(f"1 & 2. Materiales Comprados por Temporada, Volumen y Gasto ({simbolo_moneda})")
     
@@ -361,9 +355,7 @@ with tabs[0]:
         use_container_width=True
     )
 
-# ---------------------------------------------------------
-# PESTAÑA 3: CLASIFICACIÓN ABC
-# ---------------------------------------------------------
+# 3. CLASIFICACIÓN ABC
 with tabs[1]:
     st.subheader(f"3. Clasificación ABC de Materiales por Gasto ({simbolo_moneda})")
     
@@ -397,9 +389,7 @@ with tabs[1]:
         use_container_width=True
     )
 
-# ---------------------------------------------------------
-# PESTAÑA 4: RECURRENCIA DE COMPRA
-# ---------------------------------------------------------
+# 4. RECURRENCIA DE COMPRA
 with tabs[2]:
     st.subheader("4. Frecuencia y Recurrencia de Emisión de Órdenes")
     
@@ -427,9 +417,7 @@ with tabs[2]:
         use_container_width=True
     )
 
-# ---------------------------------------------------------
-# PESTAÑA 5: VARIACIÓN INTERANUAL (YoY) - INCLUYE PRECIO PROMEDIO PONDERADO (FEEDBACK 3)
-# ---------------------------------------------------------
+# 5. VARIACIÓN INTERANUAL (YoY)
 with tabs[3]:
     st.subheader(f"5. Variación Interanual (YoY) de Volumen, Gasto y Precio Ponderado ({simbolo_moneda})")
     
@@ -458,7 +446,6 @@ with tabs[3]:
         )
         
         df_yoy = pd.DataFrame(index=pivot_vol.index)
-        # Volúmenes
         df_yoy[f"Vol_{temp_base}"] = pivot_vol[temp_base]
         df_yoy[f"Vol_{temp_comp}"] = pivot_vol[temp_comp]
         df_yoy["Var_Vol_%"] = np.where(
@@ -467,7 +454,6 @@ with tabs[3]:
             np.nan
         )
         
-        # Gastos
         df_yoy[f"Gasto_{temp_base}"] = pivot_val[temp_base]
         df_yoy[f"Gasto_{temp_comp}"] = pivot_val[temp_comp]
         df_yoy["Var_Gasto_%"] = np.where(
@@ -476,7 +462,6 @@ with tabs[3]:
             np.nan
         )
         
-        # Precios Promedio Ponderados
         df_yoy[f"PPP_{temp_base}"] = np.where(df_yoy[f"Vol_{temp_base}"] > 0, df_yoy[f"Gasto_{temp_base}"] / df_yoy[f"Vol_{temp_base}"], np.nan)
         df_yoy[f"PPP_{temp_comp}"] = np.where(df_yoy[f"Vol_{temp_comp}"] > 0, df_yoy[f"Gasto_{temp_comp}"] / df_yoy[f"Vol_{temp_comp}"], np.nan)
         
@@ -503,9 +488,7 @@ with tabs[3]:
             use_container_width=True
         )
 
-# ---------------------------------------------------------
-# PESTAÑA 6: PRIORIZACIÓN PARA LICITACIÓN CORPORATIVA
-# ---------------------------------------------------------
+# 6. PRIORIZACIÓN LICITACIÓN
 with tabs[4]:
     st.subheader("6. Matriz de Recomendación de Licitación Corporativa")
     
@@ -540,13 +523,10 @@ with tabs[4]:
         use_container_width=True
     )
 
-# ---------------------------------------------------------
-# PESTAÑA 7: ANÁLISIS DE PRECIOS CON ÚLTIMA COMPRA Y PROVEEDOR (FEEDBACK 4)
-# ---------------------------------------------------------
+# 7. ANÁLISIS DE PRECIOS
 with tabs[5]:
     st.subheader(f"7. Precios Históricos, Mínimos, Máximos y Última Compra Real ({simbolo_moneda})")
     
-    # 1. Agregaciones estadísticas
     precios_df = df_filtrado[df_filtrado["Precio_Unitario_Analisis"] > 0].groupby(
         ["Temporada", "Material", "Texto breve", "Unidad medida pedido"]
     ).agg(
@@ -560,7 +540,6 @@ with tabs[5]:
     precios_df["Precio_Prom_Ponderado"] = precios_df["Gasto_Total"] / precios_df["Volumen_Total"]
     precios_df["Dispersion_Precio_%"] = ((precios_df["Precio_Max"] - precios_df["Precio_Min"]) / precios_df["Precio_Min"]) * 100
     
-    # 2. Extracción de la última compra cronológica del material en cada temporada
     df_ordenado_fecha = df_filtrado.sort_values(by=["Fecha documento", "Documento compras"], ascending=True)
     ultimas_compras = df_ordenado_fecha.groupby(
         ["Temporada", "Material", "Texto breve", "Unidad medida pedido"]
@@ -575,7 +554,6 @@ with tabs[5]:
         "Proveedor/Centro suministrador": "Ultimo_Proveedor"
     })
     
-    # 3. Cruzar estadísticas con última compra
     precios_final = pd.merge(
         precios_df,
         ultimas_compras,
@@ -598,9 +576,7 @@ with tabs[5]:
         use_container_width=True
     )
 
-# ---------------------------------------------------------
-# PESTAÑA 8: RANKING DE PROVEEDORES
-# ---------------------------------------------------------
+# 8. RANKING DE PROVEEDORES
 with tabs[6]:
     st.subheader(f"8. Ranking de Proveedores por Gasto Total ({simbolo_moneda})")
     
