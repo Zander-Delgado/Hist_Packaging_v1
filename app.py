@@ -202,6 +202,167 @@ for mon in monedas_presentes:
         )
 
 # =========================================================
+# SECCIÓN: RESUMEN GENERAL GLOBAL (CONCILIACIÓN 100% EN USD - SIN FILTROS)
+# =========================================================
+
+with st.expander("🌐 Resumen General Global (Línea Base Corporativa - USD)", expanded=True):
+    st.caption("Esta sección refleja el 100% de la base de datos sin afectarse por los filtros laterales. Expresada estrictamente en USD para homogeneizar todas las filiales.")
+
+    # 1. Asegurar cálculo universal en USD para el Resumen Global independiente
+    df_global_usd = df_clean.copy()
+    
+    def valor_a_usd_global(row):
+        mon = str(row["Moneda"]).upper()
+        val = row["Valor neto de pedido"]
+        tc = tasas_tc.get(mon, 1.0)
+        if tc <= 0:
+            return val
+        return val * tc if mon in ["EUR", "GBP"] else val / tc
+
+    df_global_usd["Gasto_USD_Global"] = df_global_usd.apply(valor_a_usd_global, axis=1)
+
+    # 2. Métricas Macro Globales
+    gasto_global_total_usd = df_global_usd["Gasto_USD_Global"].sum()
+    pos_global_totales = df_global_usd["Documento compras"].nunique()
+    lineas_global_totales = len(df_global_usd)
+    mats_global_totales = df_global_usd["Material"].nunique()
+
+    col_g1, col_g2, col_g3, col_g4 = st.columns(4)
+    col_g1.metric("Gasto Global Total (USD)", f"$ {gasto_global_total_usd:,.2f}")
+    col_g2.metric("Total Órdenes Únicas (PO)", f"{pos_global_totales:,}")
+    col_g3.metric("Total Líneas Procesadas", f"{lineas_global_totales:,}")
+    col_g4.metric("Materiales Distintos", f"{mats_global_totales:,}")
+
+    st.markdown("---")
+
+    # 3. Sub-pestañas de visualización cruzada (Todas concilian exactamente al mismo total en USD)
+    subtab_macro, subtab_filial, subtab_cat, subtab_centro = st.tabs([
+        "📅 Macro por Temporada",
+        "🏢 Por Filial / Org. Compras",
+        "📦 Por Grupo de Materiales",
+        "📍 Por Centro / Almacén"
+    ])
+
+    # --- PESTAÑA A: MACRO POR TEMPORADA Y UOM ---
+    with subtab_macro:
+        st.markdown("##### Consolidado por Temporada (USD $)")
+        resumen_temp = df_global_usd.groupby("Temporada").agg(
+            Gasto_Total_USD=("Gasto_USD_Global", "sum"),
+            Nro_Pedidos=("Documento compras", "nunique"),
+            Lineas_PO=("Documento compras", "count"),
+            Materiales=("Material", "nunique")
+        ).reset_index().sort_values(by="Temporada")
+        
+        resumen_temp["% del Total"] = (resumen_temp["Gasto_Total_USD"] / gasto_global_total_usd) * 100
+
+        st.dataframe(
+            resumen_temp.style.format({
+                "Gasto_Total_USD": "$ {:,.2f}",
+                "% del Total": "{:.2f}%",
+                "Nro_Pedidos": "{:,.0f}",
+                "Lineas_PO": "{:,.0f}",
+                "Materiales": "{:,.0f}"
+            }),
+            use_container_width=True
+        )
+
+        st.markdown("###### Detalle de Volumen Físico por Unidad de Medida (UOM)")
+        resumen_temp_uom = df_global_usd.groupby(["Temporada", "Unidad medida pedido"]).agg(
+            Volumen_Total=("Cantidad de pedido", "sum"),
+            Gasto_Total_USD=("Gasto_USD_Global", "sum"),
+            Lineas_PO=("Documento compras", "count")
+        ).reset_index().sort_values(by=["Temporada", "Gasto_Total_USD"], ascending=[True, False])
+
+        st.dataframe(
+            resumen_temp_uom.style.format({
+                "Volumen_Total": "{:,.2f}",
+                "Gasto_Total_USD": "$ {:,.2f}",
+                "Lineas_PO": "{:,.0f}"
+            }),
+            use_container_width=True
+        )
+
+    # --- PESTAÑA B: POR FILIAL / ORGANIZACIÓN DE COMPRAS ---
+    with subtab_filial:
+        st.markdown("##### Consolidado por Filial / Organización de Compras (USD $)")
+        df_op_filial = df_global_usd.copy()
+        df_op_filial["Organización compras"] = df_op_filial["Organización compras"].fillna("Sin Filial Asignada").astype(str)
+
+        resumen_filial = df_op_filial.groupby("Organización compras").agg(
+            Gasto_Total_USD=("Gasto_USD_Global", "sum"),
+            Nro_Pedidos=("Documento compras", "nunique"),
+            Lineas_PO=("Documento compras", "count"),
+            Proveedores_Activos=("Proveedor/Centro suministrador", "nunique"),
+            Materiales_Unicos=("Material", "nunique")
+        ).reset_index().sort_values(by="Gasto_Total_USD", ascending=False)
+
+        resumen_filial["% Participación"] = (resumen_filial["Gasto_Total_USD"] / gasto_global_total_usd) * 100
+
+        st.dataframe(
+            resumen_filial.style.format({
+                "Gasto_Total_USD": "$ {:,.2f}",
+                "% Participación": "{:.2f}%",
+                "Nro_Pedidos": "{:,.0f}",
+                "Lineas_PO": "{:,.0f}",
+                "Proveedores_Activos": "{:,.0f}",
+                "Materiales_Unicos": "{:,.0f}"
+            }),
+            use_container_width=True
+        )
+
+    # --- PESTAÑA C: POR GRUPO DE MATERIALES / CATEGORÍA ---
+    with subtab_cat:
+        st.markdown("##### Consolidado por Familia / Categoría de Compra (USD $)")
+        df_op_cat = df_global_usd.copy()
+        df_op_cat["Categoría"] = df_op_cat["Categoría"].fillna("Sin Categorizar").astype(str)
+
+        resumen_cat = df_op_cat.groupby("Categoría").agg(
+            Gasto_Total_USD=("Gasto_USD_Global", "sum"),
+            Nro_Pedidos=("Documento compras", "nunique"),
+            Lineas_PO=("Documento compras", "count"),
+            Materiales_Unicos=("Material", "nunique")
+        ).reset_index().sort_values(by="Gasto_Total_USD", ascending=False)
+
+        resumen_cat["% Participación"] = (resumen_cat["Gasto_Total_USD"] / gasto_global_total_usd) * 100
+
+        st.dataframe(
+            resumen_cat.style.format({
+                "Gasto_Total_USD": "$ {:,.2f}",
+                "% Participación": "{:.2f}%",
+                "Nro_Pedidos": "{:,.0f}",
+                "Lineas_PO": "{:,.0f}",
+                "Materiales_Unicos": "{:,.0f}"
+            }),
+            use_container_width=True
+        )
+
+    # --- PESTAÑA D: POR CENTRO / ALMACÉN ---
+    with subtab_centro:
+        st.markdown("##### Consolidado por Centro / Planta (USD $)")
+        df_op_centro = df_global_usd.copy()
+        df_op_centro["Centro"] = df_op_centro["Centro"].fillna("Sin Centro Asignado").astype(str)
+
+        resumen_centro = df_op_centro.groupby("Centro").agg(
+            Gasto_Total_USD=("Gasto_USD_Global", "sum"),
+            Nro_Pedidos=("Documento compras", "nunique"),
+            Lineas_PO=("Documento compras", "count"),
+            Materiales_Unicos=("Material", "nunique")
+        ).reset_index().sort_values(by="Gasto_Total_USD", ascending=False)
+
+        resumen_centro["% Participación"] = (resumen_centro["Gasto_Total_USD"] / gasto_global_total_usd) * 100
+
+        st.dataframe(
+            resumen_centro.style.format({
+                "Gasto_Total_USD": "$ {:,.2f}",
+                "% Participación": "{:.2f}%",
+                "Nro_Pedidos": "{:,.0f}",
+                "Lineas_PO": "{:,.0f}",
+                "Materiales_Unicos": "{:,.0f}"
+            }),
+            use_container_width=True
+        )
+        
+# =========================================================
 # FILTROS DE SEGMENTACIÓN
 # =========================================================
 
