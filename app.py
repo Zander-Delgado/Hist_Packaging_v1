@@ -250,7 +250,8 @@ with st.expander("🌐 Resumen General Global (Línea Base Corporativa - USD)", 
             Gasto_Total_USD=("Gasto_USD_Global", "sum"),
             Nro_Pedidos=("Documento compras", "nunique"),
             Lineas_PO=("Documento compras", "count"),
-            Materiales=("Material", "nunique")
+            Materiales=("Material", "nunique"),
+            Proveedores_Unicos=("Proveedor/Centro suministrador", "nunique")  # 👈 Proveedores únicos
         ).reset_index().sort_values(by="Temporada")
         
         resumen_temp["% del Total"] = (resumen_temp["Gasto_Total_USD"] / gasto_global_total_usd) * 100
@@ -261,7 +262,8 @@ with st.expander("🌐 Resumen General Global (Línea Base Corporativa - USD)", 
                 "% del Total": "{:.2f}%",
                 "Nro_Pedidos": "{:,.0f}",
                 "Lineas_PO": "{:,.0f}",
-                "Materiales": "{:,.0f}"
+                "Materiales": "{:,.0f}",
+                "Proveedores_Unicos": "{:,.0f}"  # 👈 Formato numérico entero
             }),
             use_container_width=True
         )
@@ -270,14 +272,16 @@ with st.expander("🌐 Resumen General Global (Línea Base Corporativa - USD)", 
         resumen_temp_uom = df_global_usd.groupby(["Temporada", "Unidad medida pedido"]).agg(
             Volumen_Total=("Cantidad de pedido", "sum"),
             Gasto_Total_USD=("Gasto_USD_Global", "sum"),
-            Lineas_PO=("Documento compras", "count")
+            Lineas_PO=("Documento compras", "count"),
+            Proveedores_Unicos=("Proveedor/Centro suministrador", "nunique")  # 👈 También visible por UOM
         ).reset_index().sort_values(by=["Temporada", "Gasto_Total_USD"], ascending=[True, False])
 
         st.dataframe(
             resumen_temp_uom.style.format({
                 "Volumen_Total": "{:,.2f}",
                 "Gasto_Total_USD": "$ {:,.2f}",
-                "Lineas_PO": "{:,.0f}"
+                "Lineas_PO": "{:,.0f}",
+                "Proveedores_Unicos": "{:,.0f}"
             }),
             use_container_width=True
         )
